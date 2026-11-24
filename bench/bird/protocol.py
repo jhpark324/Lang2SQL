@@ -15,11 +15,11 @@ import lang2sql
 from bench.common.io import ProtocolError, digest, json_digest, read_json
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-BASELINE = "fb1f36e9b0980c5e593d2fddb5ecc6607cd101d7"
+BASELINE = "0a7d85d8155b7202d45999631f526e028ddc1e1e"
 EVALUATOR_SOURCE = "1f47f2821559992717aeb23e1cd34ca489142300"
 CONDITIONS = ("A", "D", "B")
 DEFAULT_PROFILES = Path(__file__).with_name("models.example.json")
-TOOLS = ("run_sql", "explore_schema")
+TOOLS = ("run_sql", "review_sql", "explore_schema")
 SEED = 20261114
 EVIDENCE_LABEL = "BIRD evidence"
 INSTRUCTION = (

@@ -31,7 +31,7 @@ from lang2sql.harness.loop import agent_loop
 from lang2sql.harness.tool_registry import ToolRegistry
 from lang2sql.tenancy.concierge import ContextConcierge
 from lang2sql.tenancy.encrypted_secrets import EncryptedSecrets
-from lang2sql.tools import ExploreSchema, RunSQL
+from lang2sql.tools import ExploreSchema, ReviewSQL, RunSQL
 from lang2sql.tools.semantic_federation import build_prompt_section
 
 from .dataset import Case
@@ -128,7 +128,7 @@ async def run_case(
     trace: dict = {}
     answer: str | None = None
     transcript: list[dict] = []
-    tools = ToolRegistry([RunSQL(), ExploreSchema()])
+    tools = ToolRegistry([RunSQL(), ReviewSQL(), ExploreSchema()])
     store = CaseStore()
     explorer = ReadOnlyExplorer(db, budgets.sql_timeout)
     recovery = RecoveryTrace(explorer)

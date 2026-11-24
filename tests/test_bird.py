@@ -240,6 +240,7 @@ async def test_call_budget_and_writable_tool_isolation(prepared):
     async def transport(**kwargs):
         assert [f["function"]["name"] for f in kwargs["tools"]] == [
             "run_sql",
+            "review_sql",
             "explore_schema",
         ]
         return response(
@@ -253,6 +254,43 @@ async def test_call_budget_and_writable_tool_isolation(prepared):
     assert len(record["calls"]) == 2
     assert all(tool["is_error"] for tool in record["tools"])
     assert record["failure"]["reason"] == "call_budget_exhausted"
+
+
+@pytest.mark.asyncio
+async def test_review_uses_the_same_model_and_counted_call_budget(prepared):
+    case = load_cases(prepared.path, prepared.manifest)[0]
+    profile = load_profile(DEFAULT_PROFILES, "openai-gpt41-mini")
+    files = CaseFiles(prepared.output, case.question_id, "A", profile["name"], "test")
+    sql = "SELECT x FROM fixture"
+    requests = []
+    replies = iter(
+        [
+            response(tool_name="explore_schema", arguments={"tables": ["fixture"]}),
+            response(tool_name="review_sql", arguments={"sql": sql}),
+            response(content='{"verdict":"pass","reason":"Matches the question"}'),
+            response(tool_name="run_sql", arguments={"sql": sql}),
+            response(content=f"```sql\n{sql}\n```"),
+        ]
+    )
+
+    async def transport(**kwargs):
+        requests.append(kwargs)
+        return next(replies)
+
+    record = await run_case(
+        case, prepared.db, files, prepared.budgets, profile, transport, "mock"
+    )
+    assert record["sql"] == sql
+    assert [call["harness"] for call in record["calls"]] == [True, True, False, True, True]
+    assert {request["model"] for request in requests} == {profile["model"]}
+    assert "tools" not in requests[2]
+    review_input = json.loads(requests[2]["messages"][1]["content"])
+    assert review_input["sql"] == sql
+    assert case.evidence in review_input["database_context"]
+    assert json.loads(requests[3]["messages"][-1]["content"])["verdict"] == "pass"
+    assert [tool["name"] for tool in record["tools"]] == [
+        "explore_schema", "review_sql", "run_sql"
+    ]
 
 
 @pytest.mark.asyncio
