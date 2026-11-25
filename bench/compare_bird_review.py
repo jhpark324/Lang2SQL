@@ -1,4 +1,4 @@
-"""Pair #289's BIRD run with the published #280 treatment arm."""
+"""Pair structured SQL review with the published unstructured #290 run."""
 
 from __future__ import annotations
 
@@ -14,15 +14,15 @@ from bench.bird.dataset import verify_databases
 from bench.bird.protocol import BASELINE as REVIEW_PRODUCT
 from bench.common.io import digest, json_digest, read_json, write_json
 
-REFERENCE_PR_HEAD = "f47da5c669a2c691d59d90fd236e227f5db0da96"
-REFERENCE_PRODUCT = "fb1f36e9b0980c5e593d2fddb5ecc6607cd101d7"
+REFERENCE_PR_HEAD = "151939f9adcee2c073832eaf5df0e161cf73aa52"
+REFERENCE_PRODUCT = "0a7d85d8155b7202d45999631f526e028ddc1e1e"
+REFERENCE_CALL_LIMIT, REVIEW_CALL_LIMIT = 8, 12
 MATCHED_SETTINGS = (
     "mode",
     "condition",
     "profile",
     "manifest_digest",
     "runtime",
-    "budgets",
     "provider_options",
     "scoring",
     "question_order",
@@ -32,6 +32,7 @@ MATCHED_SETTINGS = (
     "term_custom",
     "lock_sha256",
     "evaluator_source",
+    "tools",
 )
 
 
@@ -93,6 +94,7 @@ def review_metrics(record):
         "invalid_verdict": errors["invalid_verdict"],
         "budget_denied": errors["budget_denied"],
         "api_calls": len(auxiliary),
+        "structured_api_calls": sum("response_format" in call for call in auxiliary),
         "api_errors": sum(call["status"] == "error" for call in auxiliary),
         "api_sql_fences": sum(
             bool(re.search(r"```sql\b", call.get("content", ""), re.IGNORECASE))
@@ -126,6 +128,10 @@ def main():
         summarize,
         write_lines,
     )
+    from lang2sql.adapters.llm.openai_ import _encode_response_format
+    from lang2sql.tools.review_sql import _VERDICT_SCHEMA
+
+    response_format = _encode_response_format("sql_review_verdict", _VERDICT_SCHEMA)
 
     parser = argparse.ArgumentParser(description=__doc__)
     for name in ("reference", "run", "db-dir", "output"):
@@ -136,10 +142,8 @@ def main():
     databases = verify_databases(args.db_dir, manifest)
     cases = index(manifest["cases"], "question_id")
     reference = read_json(args.reference / "comparison.json")
-    require(reference["treatment_product"] == REFERENCE_PRODUCT, "Wrong #280 arm")
-    require(
-        reference["manifest_artifact_sha256"] == digest(manifest_path), "Wrong manifest"
-    )
+    require(reference["treatment_product"] == REFERENCE_PRODUCT, "Wrong #290 arm")
+    require(reference["manifest_sha256"] == digest(manifest_path), "Wrong manifest")
     require(
         len(cases) == 365 and len(reference["groups"]) == 9, "Wrong evaluation matrix"
     )
@@ -148,7 +152,7 @@ def main():
 
     groups = {}
     for name, previous in reference["groups"].items():
-        baseline = args.reference / name / "treatment"
+        baseline = args.reference / name
         run = args.run / name
         before_settings = read_json(baseline / "settings.json")
         settings = read_json(run / "settings.json")
@@ -169,19 +173,20 @@ def main():
         for key in MATCHED_SETTINGS:
             require(before_settings[key] == settings[key], f"Changed {key}: {name}")
         require(
-            before_settings["tools"] == ["run_sql", "explore_schema"],
-            f"Unexpected #280 tools: {name}",
+            before_settings["budgets"]["max_calls"] == REFERENCE_CALL_LIMIT,
+            f"Unexpected #290 call limit: {name}",
         )
         require(
-            settings["tools"] == ["run_sql", "review_sql", "explore_schema"],
-            f"Wrong tool set: {name}",
+            settings["budgets"]
+            == {**before_settings["budgets"], "max_calls": REVIEW_CALL_LIMIT},
+            f"Unexpected budget changes: {name}",
         )
         old_code = before_settings["code_sha256"]
         new_code = settings["code_sha256"]
         require(old_code.keys() == new_code.keys(), f"Evaluator files changed: {name}")
         changed_code = {key for key in old_code if old_code[key] != new_code[key]}
         require(
-            changed_code == {"bench/bird/protocol.py", "bench/bird/runner.py"},
+            changed_code == {"bench/bird/protocol.py", "bench/common/providers.py"},
             f"Unexpected evaluator diff: {name}",
         )
         require(
@@ -201,12 +206,10 @@ def main():
             require(
                 digest(baseline / filename)
                 == provenance[f"{Path(filename).stem}_sha256"],
-                f"Wrong #280 {filename}: {name}",
+                f"Wrong #290 {filename}: {name}",
             )
 
-        base_rows = index(
-            read_lines(baseline.parent / "paired-scores.jsonl"), "question_id"
-        )
+        base_rows = index(read_lines(baseline / "paired-scores.jsonl"), "question_id")
         base_scores = index(read_json(baseline / "scores.json"), "question_id")
         scores = index(read_json(run / "scores.json"), "question_id")
         require(
@@ -256,6 +259,14 @@ def main():
                 len(result["calls"]) <= settings["budgets"]["max_calls"],
                 f"Over budget: {name}/{ident}",
             )
+            require(
+                all(
+                    call.get("response_format")
+                    == (None if call["harness"] else response_format)
+                    for call in result["calls"]
+                ),
+                f"Unexpected response format: {name}/{ident}",
+            )
             after = case_metrics(
                 "bird",
                 result,
@@ -265,6 +276,10 @@ def main():
                 baseline=False,
             )
             after["review"] = review_metrics(result)
+            after["exceeded_previous_limit"] = (
+                len(result["calls"]) > REFERENCE_CALL_LIMIT
+            )
+            after["reached_call_limit"] = len(result["calls"]) == REVIEW_CALL_LIMIT
             rows.append(
                 {
                     "question_id": ident,
@@ -293,11 +308,21 @@ def main():
         review = Counter()
         transitions = {}
         paired = Counter()
+        call_limit = Counter()
         for row in rows:
             left, right = row["baseline"], row["treatment"]
             review.update(right["review"])
             transitions.setdefault(left["state"], Counter())[right["state"]] += 1
             paired[left["correct"], right["correct"]] += 1
+            past_limit = right["exceeded_previous_limit"]
+            call_limit.update(
+                cases_above_previous_limit=int(past_limit),
+                correct_above_previous_limit=int(past_limit and right["correct"]),
+                reached_new_limit=int(right["reached_call_limit"]),
+                previously_exhausted_now_correct=int(
+                    left["budget_without_sql"] and right["correct"]
+                ),
+            )
         after.update(
             accuracy_pct=100 * after["correct"] / len(rows), review=dict(review)
         )
@@ -316,6 +341,7 @@ def main():
             * 100
             / len(rows),
             "state_transitions": transitions,
+            "call_limit": dict(call_limit),
         }
         export = args.output / name
         write_lines(export / "paired-scores.jsonl", rows)
@@ -341,6 +367,8 @@ def main():
             "baseline_pr_head": REFERENCE_PR_HEAD,
             "baseline_product": REFERENCE_PRODUCT,
             "treatment_product": REVIEW_PRODUCT,
+            "baseline_max_calls": REFERENCE_CALL_LIMIT,
+            "treatment_max_calls": REVIEW_CALL_LIMIT,
             "manifest_sha256": digest(manifest_path),
             "paired_cases": sum(group["pairs"] for group in groups.values()),
             "groups": groups,
