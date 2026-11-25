@@ -47,7 +47,7 @@ PROFILES = {
 
 @dataclass(frozen=True)
 class Budgets:
-    max_calls: int = 8
+    max_calls: int = 12
     max_output_tokens: int = 4096
     call_timeout: float = 120.0
     case_timeout: float = 480.0
