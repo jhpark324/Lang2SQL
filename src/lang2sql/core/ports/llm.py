@@ -7,7 +7,7 @@ adapter add with zero loop changes.
 
 from __future__ import annotations
 
-from typing import Protocol, Sequence, runtime_checkable
+from typing import Any, Protocol, Sequence, runtime_checkable
 
 from ..types import Completion, Message, ToolSpec
 
@@ -34,4 +34,17 @@ class RequiredToolLLMPort(LLMPort, Protocol):
         messages: Sequence[Message],
         tools: Sequence[ToolSpec],
         tool_name: str,
+    ) -> Completion: ...
+
+
+@runtime_checkable
+class JsonSchemaLLMPort(LLMPort, Protocol):
+    """An LLM adapter that can constrain a completion to a JSON schema."""
+
+    async def complete_with_json_schema(
+        self,
+        messages: Sequence[Message],
+        *,
+        name: str,
+        schema: dict[str, Any],
     ) -> Completion: ...

@@ -57,12 +57,24 @@ class OpenAILLM:
     ) -> Completion:
         return await self._complete(messages, tools, required_tool=tool_name)
 
+    async def complete_with_json_schema(
+        self,
+        messages: Sequence[Message],
+        *,
+        name: str,
+        schema: dict[str, Any],
+    ) -> Completion:
+        return await self._complete(
+            messages, (), response_format=_encode_response_format(name, schema)
+        )
+
     async def _complete(
         self,
         messages: Sequence[Message],
         tools: Sequence[ToolSpec],
         *,
         required_tool: str | None = None,
+        response_format: dict[str, Any] | None = None,
     ) -> Completion:
         if not self._api_key:
             raise RuntimeError("OPENAI_API_KEY not set")
@@ -78,6 +90,8 @@ class OpenAILLM:
                 "type": "function",
                 "function": {"name": required_tool},
             }
+        if response_format is not None:
+            payload["response_format"] = response_format
 
         raw = await asyncio.to_thread(self._post, payload)
         return _decode_completion(raw)
@@ -108,6 +122,13 @@ class OpenAILLM:
             raise RuntimeError(
                 f"OpenAI returned non-JSON response: {text[:200]!r}"
             ) from exc
+
+
+def _encode_response_format(name: str, schema: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "type": "json_schema",
+        "json_schema": {"name": name, "strict": True, "schema": schema},
+    }
 
 
 def _strip_thinking(text: str) -> str:

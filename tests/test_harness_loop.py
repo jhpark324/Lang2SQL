@@ -225,6 +225,26 @@ def test_reviewed_candidate_is_executed_and_submitted_as_sql():
     assert "fenced code block tagged `sql`" in workflow
     assert "review_sql" in {tool["function"]["name"] for tool in first_request["tools"]}
     assert "tools" not in review_request
+    assert review_request["response_format"] == {
+        "type": "json_schema",
+        "json_schema": {
+            "name": "sql_review_verdict",
+            "strict": True,
+            "schema": {
+                "type": "object",
+                "properties": {
+                    "verdict": {"type": "string", "enum": ["pass", "revise"]},
+                    "reason": {"type": "string"},
+                },
+                "required": ["verdict", "reason"],
+                "additionalProperties": False,
+            },
+        },
+    }
+    assert all(
+        "response_format" not in request
+        for request in (first_request, execution_request, final_request)
+    )
     instructions, inputs = review_request["messages"]
     assert instructions["role"] == "system"
     assert "aggregation grain" in instructions["content"]

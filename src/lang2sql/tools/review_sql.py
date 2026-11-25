@@ -6,6 +6,7 @@ import json
 import re
 from typing import TYPE_CHECKING, Any
 
+from ..core.ports.llm import JsonSchemaLLMPort
 from ..core.types import Message, Role, ToolResult, ToolSpec
 
 if TYPE_CHECKING:
@@ -25,6 +26,16 @@ Use "pass" when the candidate matches the question. Use "revise" for a mismatch
 or missing information that prevents a decision. For each mismatch, identify
 the question's requirement and the SQL clause that fails to meet it (or is
 missing). If information is missing, name what needs to be checked."""
+
+_VERDICT_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "verdict": {"type": "string", "enum": ["pass", "revise"]},
+        "reason": {"type": "string"},
+    },
+    "required": ["verdict", "reason"],
+    "additionalProperties": False,
+}
 
 
 class ReviewSQL:
@@ -85,12 +96,16 @@ class ReviewSQL:
             "schema_results": list(reversed(schema_results)),
             "additional_context": context,
         }
-        completion = await ctx.llm.complete(
-            [
-                Message(role=Role.SYSTEM, content=_INSTRUCTIONS),
-                Message(role=Role.USER, content=json.dumps(payload, ensure_ascii=False)),
-            ]
-        )
+        messages = [
+            Message(role=Role.SYSTEM, content=_INSTRUCTIONS),
+            Message(role=Role.USER, content=json.dumps(payload, ensure_ascii=False)),
+        ]
+        if isinstance(ctx.llm, JsonSchemaLLMPort):
+            completion = await ctx.llm.complete_with_json_schema(
+                messages, name="sql_review_verdict", schema=_VERDICT_SCHEMA
+            )
+        else:
+            completion = await ctx.llm.complete(messages)
         if not completion.tool_calls and completion.finish_reason not in {
             "length",
             "content_filter",
@@ -114,10 +129,6 @@ def _parse_review(content: str) -> dict[str, str] | None:
         return None
     if isinstance(review, dict):
         verdict, reason = review.get("verdict"), review.get("reason")
-        if (
-            verdict in ("pass", "revise")
-            and isinstance(reason, str)
-            and reason.strip()
-        ):
+        if verdict in ("pass", "revise") and isinstance(reason, str) and reason.strip():
             return {"verdict": verdict, "reason": reason.strip()}
     return None
